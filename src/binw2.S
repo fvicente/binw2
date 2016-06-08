@@ -161,19 +161,21 @@ main:
 	in r16, _SFR_IO_ADDR(MCUCR)
 	; Set sleep mode to idle (SM0 = 0, SM1 = 0)
 	andi r16, ~(_BV(SM0) | _BV(SM1))
-	; Enable sleep mode bit
-	ori r16, _BV(SE)
 	; Write MCU control register
-	out _SFR_IO_ADDR(DDRB), r16
+	out _SFR_IO_ADDR(MCUCR), r16
 
 	; Prescale timer to 1/256th the clock rate
+;	in r16, _SFR_IO_ADDR(TCCR0B)
+;	andi r16, ~(_BV(CS01) | _BV(CS00))
+;	ori r16, _BV(CS02)
+	; Prescale timer to 1/64th the clock rate
 	in r16, _SFR_IO_ADDR(TCCR0B)
-	andi r16, ~(_BV(CS01) | _BV(CS00))
-	ori r16, _BV(CS02)
+	andi r16, ~(_BV(CS02))
+	ori r16, _BV(CS00) | _BV(CS01)
 	out _SFR_IO_ADDR(TCCR0B), r16
 
-	; Set TOP to 250
-	ldi r16, 250
+	; Set TOP to 125
+	ldi r16, 125
 	out _SFR_IO_ADDR(OCR0A), r16
 
 	; Set compare mode to "Clear Timer on Compare Match (CTC) mode"
@@ -193,11 +195,24 @@ main:
 
 	; Enable global interrupts
 	sei
+	rjmp displayoff
 
 loop:
+	; Enable sleep mode bit
+	in r16, _SFR_IO_ADDR(MCUCR)
+	ori r16, _BV(SE)
+	out _SFR_IO_ADDR(MCUCR), r16
+
 	sleep
+
+	; Disable sleep mode bit
+	in r16, _SFR_IO_ADDR(MCUCR)
+	andi r16, ~(_BV(SE))
+	out _SFR_IO_ADDR(MCUCR), r16
+
 	; check input
 	rcall chkinput
+;ldi r21, DISPLAY_DLY
 	cpi r21, 0
 	brne begindisplay
 	rjmp loop
@@ -306,7 +321,15 @@ disphour:
 displayoff:
 	; turn off display
 	in r16, _SFR_IO_ADDR(DDRB)
-	andi r16, 0xF0				; make the 4 charlie-plexing pins input (clear the bits)
-	andi r16, ~(_BV(PIN_AMPM))	; make am/pm pin input
+;	andi r16, 0xF0				; make the 4 charlie-plexing pins input (clear the bits)
+;	andi r16, ~(_BV(PIN_AMPM))	; make am/pm pin input
+
+	; test all output
+	ori r16, 0x0F				; make the 4 charlie-plexing pins input (clear the bits)
+
 	out _SFR_IO_ADDR(DDRB), r16
+	cbi _SFR_IO_ADDR(PORTB), 0
+	cbi _SFR_IO_ADDR(PORTB), 1
+	cbi _SFR_IO_ADDR(PORTB), 2
+	cbi _SFR_IO_ADDR(PORTB), 3
 	rjmp loop

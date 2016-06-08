@@ -4,7 +4,7 @@
 MMCU=attiny13
 
 [ -e "/dev/tty.usbserial-A8008VmU" ] && PORT=/dev/tty.usbserial-A8008VmU || PORT=/dev/ttyUSB0
-avrdude -F -P $PORT -p $MMCU -c avrisp -b 19200 -U flash:w:binw2.hex -Ulfuse:w:0x79:m -Uhfuse:w:0xff:m
+avrdude -F -P $PORT -p $MMCU -c avrisp -b 19200 -U flash:w:binw2.hex -Ulfuse:w:0x69:m -Uhfuse:w:0xff:m
 
 # Fuses
 # Read
