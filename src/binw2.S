@@ -133,7 +133,6 @@ main:
 	sbi _SFR_IO_ADDR(DDRB), 0x00	; output
 	sbi _SFR_IO_ADDR(DDRB), 0x01	; output
 	sbi _SFR_IO_ADDR(DDRB), 0x02	; output
-	cbi _SFR_IO_ADDR(DDRB), INPUT	; make input
 
 	; Initialize registers
 	ldi r16, 0x00		; aux
@@ -151,6 +150,25 @@ main:
 
 	mov r0, r24			; used by lpm instruction
 	mov r1, r24			; to save SREG during interrupt
+
+	;
+	; The device always starts in program mode, so the user can set the current time
+	;
+programmode:
+	; Read the input, we have two buttons attached with different resistance values
+	; so, we make an ADC conversion to figure out which button is pressed
+	cbi _SFR_IO_ADDR(DDRB), INPUT	; make input
+	; Start ADC conversion
+	sbi _SFR_IO_ADDR(ACSR), ACD
+	; Wait until ADC conversion finishes
+adcconv:
+	sbic _SFR_IO_ADDR(ADCSRA), ADSC
+	rjmp adcconv
+	; Conversion done, read result
+
+  ;  ADCSRA |= (1 << ADSC); // start conversion
+  ;  while( ADCSRA & ( 1<< ADSC ) ); // wait under conversion done
+  ;  result = ADCH
 
 	; Disable ACD (analog comparator)
 	sbi _SFR_IO_ADDR(ACSR), ACD
