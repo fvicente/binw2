@@ -1,35 +1,14 @@
 /*
-	charlcd.c
-
-	Copyright Luki <humbell@ethz.ch>
-	Copyright 2011 Michel Pollet <buserror@gmail.com>
-
- 	This file is part of simavr.
-
-	simavr is free software: you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation, either version 3 of the License, or
-	(at your option) any later version.
-
-	simavr is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License
-	along with simavr.  If not, see <http://www.gnu.org/licenses/>.
+ *	simul.c
+ *
+ *	Copyright 2016, Fernando Vicente <fvicente@gmail.com>
+ *
+ *	bin2w simulator.
  */
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <libgen.h>
-
-#include "sim_avr.h"
-#include "avr_ioport.h"
-#include "sim_elf.h"
-#include "sim_gdb.h"
-#include "sim_vcd_file.h"
-
 #if __APPLE__
 #include <GLUT/glut.h>
 #else
@@ -37,44 +16,132 @@
 #endif
 #include <pthread.h>
 
-#include "ac_input.h"
-#include "hd44780_glut.h"
+#include "sim_avr.h"
+#include "avr_ioport.h"
+#include "sim_elf.h"
+#include "sim_gdb.h"
+#include "sim_vcd_file.h"
 
+#include "button.h"
 
-//float pixsize = 16;
-int window;
+button_t	button;
+int			do_button_press = 0;
+avr_t		*avr = NULL;
+avr_vcd_t	vcd_file;
+uint8_t		pin_state = 0;		// current port B
+uint8_t		ddr_state = 0;		// ddr port B
 
-avr_t * avr = NULL;
-avr_vcd_t vcd_file;
-ac_input_t ac_input;
-hd44780_t hd44780;
+#define		SZ_PIXSIZE		32.0
 
-int color = 0;
-uint32_t colors[][4] = {
-		{ 0x00aa00ff, 0x00cc00ff, 0x000000ff, 0x00000055 },	// fluo green
-		{ 0xaa0000ff, 0xcc0000ff, 0x000000ff, 0x00000055 },	// red
+const float	SZ_GRID = SZ_PIXSIZE;
+const float	SZ_LED = SZ_PIXSIZE * 0.8;
+int			window;
+
+/**
+ * 6 |  14 <- AM
+ * 5 |  13 <- PM
+ * 4 |
+ * 3 |    5     12
+ * 2 |    4   8 11
+ * 1 |    3   7 10
+ * 0 |  1 2   6 9
+ * --+------------
+ *      0 1 2 3 4
+ *
+ *      H H : M M
+ */
+#define		VX1(x)		((x * SZ_GRID) + SZ_LED)
+#define		VY1(y)		((y * SZ_GRID) + SZ_LED)
+#define		VX2(x)		(x * SZ_GRID)
+#define		VY2(y)		((y * SZ_GRID) + SZ_LED)
+#define		VX3(x)		(x * SZ_GRID)
+#define		VY3(y)		(y * SZ_GRID)
+#define		VX4(x)		((x * SZ_GRID) + SZ_LED)
+#define		VY4(y)		(y * SZ_GRID)
+
+float		leds[14][8] = {
+	{VX1(0), VY1(0), VX2(0), VY2(0), VX3(0), VY3(0), VX4(0), VY4(0)},
+	{VX1(1), VY1(0), VX2(1), VY2(0), VX3(1), VY3(0), VX4(1), VY4(0)},
+	{VX1(1), VY1(1), VX2(1), VY2(1), VX3(1), VY3(1), VX4(1), VY4(1)},
+	{VX1(1), VY1(2), VX2(1), VY2(2), VX3(1), VY3(2), VX4(1), VY4(2)},
+	{VX1(1), VY1(3), VX2(1), VY2(3), VX3(1), VY3(3), VX4(1), VY4(3)},
+	{VX1(3), VY1(0), VX2(3), VY2(0), VX3(3), VY3(0), VX4(3), VY4(0)},
+	{VX1(3), VY1(1), VX2(3), VY2(1), VX3(3), VY3(1), VX4(3), VY4(1)},
+	{VX1(3), VY1(2), VX2(3), VY2(2), VX3(3), VY3(2), VX4(3), VY4(2)},
+	{VX1(4), VY1(0), VX2(4), VY2(0), VX3(4), VY3(0), VX4(4), VY4(0)},
+	{VX1(4), VY1(1), VX2(4), VY2(1), VX3(4), VY3(1), VX4(4), VY4(1)},
+	{VX1(4), VY1(2), VX2(4), VY2(2), VX3(4), VY3(2), VX4(4), VY4(2)},
+	{VX1(4), VY1(3), VX2(4), VY2(3), VX3(4), VY3(3), VX4(4), VY4(3)},
+	{VX1(0), VY1(5), VX2(0), VY2(5), VX3(0), VY3(5), VX4(0), VY4(5)},
+	{VX1(0), VY1(6), VX2(0), VY2(6), VX3(0), VY3(6), VX4(0), VY4(6)}
 };
 
-static void *
-avr_run_thread(
-		void * ignore)
+// charlieplexing map
+// xxxxyyyy where x == 1 output, x == 0 input, y == 1 on, y == 0 off
+unsigned char cp[] = {0x00, 0x31, 0x51, 0x91, 0xA2, 0x62, 0x32, 0x64, 0xC4, 0x54, 0xA8, 0xC8, 0x98};
+
+/**
+ * called when the AVR change any of the pins on port B
+ * so lets update our buffer
+ */
+void pin_changed_hook(struct avr_irq_t *irq, uint32_t value, void *param)
 {
-	while (1) {
-		avr_run(avr);
-	}
-	return NULL;
+	pin_state = (pin_state & ~(1 << irq->irq)) | (value << irq->irq);
+	printf("Changed pin\n");
 }
 
-void keyCB(
-		unsigned char key, int x, int y)	/* called on key press */
+void ddr_hook(struct avr_irq_t *irq, uint32_t value, void *param)
 {
+	ddr_state = (uint8_t)value;
+	printf("Changed ddr %2.x\n", ddr_state);
+}
+
+void displayCB(void)		/* function called whenever redisplay needed */
+{
+	unsigned char curstate = (pin_state & 0x0F) | (ddr_state & 0xF0);
+	// OpenGL rendering goes here...
+	glClear(GL_COLOR_BUFFER_BIT);
+
+	// Set up modelview matrix
+	glMatrixMode(GL_MODELVIEW); // Select modelview matrix
+	glLoadIdentity(); // Start with an identity matrix
+
+	// float grid = SZ_PIXSIZE;
+	// float size = grid * 0.8;
+    glBegin(GL_QUADS);
+	glColor3f(1, 0, 0);
+
+	for (int di = 1; di < 13; di++) {
+		if (cp[di] == curstate) {
+			float	*ledv = leds[di - 1];
+			glVertex2f(ledv[0], ledv[1]);
+			glVertex2f(ledv[2], ledv[3]);
+			glVertex2f(ledv[4], ledv[5]);
+			glVertex2f(ledv[6], ledv[7]);
+		}
+	}
+
+	glEnd();
+	glutSwapBuffers();
+	//glFlush();				/* Complete any pending operations */
+}
+
+void keyCB(unsigned char key, int x, int y)	/* called on key press */
+{
+	if (key == 'q') {
+		exit(0);
+	}
+	//static uint8_t buf[64];
 	switch (key) {
 		case 'q':
-			avr_vcd_stop(&vcd_file);
+		case 0x1f: // escape
 			exit(0);
 			break;
+		case ' ':
+			do_button_press++; // pass the message to the AVR thread
+			break;
 		case 'r':
-			printf("Starting VCD trace; press 's' to stop\n");
+			printf("Starting VCD trace\n");
 			avr_vcd_start(&vcd_file);
 			break;
 		case 's':
@@ -84,144 +151,106 @@ void keyCB(
 	}
 }
 
-
-void displayCB(void)		/* function called whenever redisplay needed */
-{
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	glMatrixMode(GL_MODELVIEW); // Select modelview matrix
-	glPushMatrix();
-	glLoadIdentity(); // Start with an identity matrix
-	glScalef(3, 3, 1);
-
-	hd44780_gl_draw(
-		&hd44780,
-			colors[color][0], /* background */
-			colors[color][1], /* character background */
-			colors[color][2], /* text */
-			colors[color][3] /* shadow */ );
-	glPopMatrix();
-    glutSwapBuffers();
-}
-
-// gl timer. if the lcd is dirty, refresh display
+// gl timer. if the pin have changed states, refresh display
 void timerCB(int i)
 {
-	//static int oldstate = -1;
+	static uint8_t oldstate = 0xff;
 	// restart timer
-	glutTimerFunc(1000/64, timerCB, 0);
-	glutPostRedisplay();
+	glutTimerFunc(1000 / 64, timerCB, 0);
+
+	if (oldstate != pin_state) {
+		oldstate = pin_state;
+		glutPostRedisplay();
+	}
 }
 
-int
-initGL(int w, int h)
+static void *avr_run_thread(void * oaram)
 {
-	// Set up projection matrix
-	glMatrixMode(GL_PROJECTION); // Select projection matrix
-	glLoadIdentity(); // Start with an identity matrix
-	glOrtho(0, w, 0, h, 0, 10);
-	glScalef(1,-1,1);
-	glTranslatef(0, -1 * h, 0);
-
-	glutDisplayFunc(displayCB);		/* set window's display callback */
-	glutKeyboardFunc(keyCB);		/* set window's key callback */
-	glutTimerFunc(1000 / 24, timerCB, 0);
-
-	glEnable(GL_TEXTURE_2D);
-	glShadeModel(GL_SMOOTH);
-
-	glClearColor(0.8f, 0.8f, 0.8f, 1.0f);
-	glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glEnable(GL_BLEND);
-
-	hd44780_gl_init();
-
-	return 1;
+	int b_press = do_button_press;
+	
+	while (1) {
+		avr_run(avr);
+		if (do_button_press != b_press) {
+			b_press = do_button_press;
+			printf("Button pressed\n");
+			button_press(&button, 1000000);
+		}
+	}
+	return NULL;
 }
 
-int
-main(
-		int argc,
-		char *argv[])
+int main(int argc, char *argv[])
 {
-	elf_firmware_t f;
-	const char * fname = "atmega48_charlcd.axf";
-//	char path[256];
-//	sprintf(path, "%s/%s", dirname(argv[0]), fname);
-//	printf("Firmware pathname is %s\n", path);
+	elf_firmware_t		f;
+	const char			*fname="../src/binw2.elf";
+	const char			*mmcu="attiny13";
+
 	elf_read_firmware(fname, &f);
 
-	printf("firmware %s f=%d mmcu=%s\n", fname, (int) f.frequency, f.mmcu);
+	snprintf(f.mmcu, sizeof(f.mmcu) - 1, "%s", mmcu);
+	f.frequency = 8000000;
+	printf("firmware %s f=%d mmcu=%s\n", fname, (int)f.frequency, f.mmcu);
 
 	avr = avr_make_mcu_by_name(f.mmcu);
 	if (!avr) {
 		fprintf(stderr, "%s: AVR '%s' not known\n", argv[0], f.mmcu);
 		exit(1);
 	}
-
 	avr_init(avr);
 	avr_load_firmware(avr, &f);
-	ac_input_init(avr, &ac_input);
-	avr_connect_irq(ac_input.irq + IRQ_AC_OUT, avr_io_getirq(avr,
-	        AVR_IOCTL_IOPORT_GETIRQ('D'), 2));
 
-	hd44780_init(avr, &hd44780, 20, 4);
+	// initialize our 'peripheral'
+	//button_init(avr, &button, "button");
+	// "connect" the output irw of the button to the port pin of the AVR
+	//avr_connect_irq(
+	//	button.irq + IRQ_BUTTON_OUT,
+	//	avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('C'), 0));
 
-	/* Connect Data Lines to Port B, 0-3 */
-	/* These are bidirectional too */
+	avr_irq_register_notify(
+		avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), IOPORT_IRQ_DIRECTION_ALL),
+		ddr_hook,
+		NULL);
+
+	// connect the 4 charlieplexed pins (0 to 3) on port B to our callback
 	for (int i = 0; i < 4; i++) {
-		avr_irq_t * iavr = avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), i);
-		avr_irq_t * ilcd = hd44780.irq + IRQ_HD44780_D4 + i;
-		// AVR -> LCD
-		avr_connect_irq(iavr, ilcd);
-		// LCD -> AVR
-		avr_connect_irq(ilcd, iavr);
+		avr_irq_register_notify(
+			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), i),
+			pin_changed_hook, 
+			NULL);
 	}
-	avr_connect_irq(
-			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 4),
-			hd44780.irq + IRQ_HD44780_RS);
-	avr_connect_irq(
-			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 5),
-			hd44780.irq + IRQ_HD44780_E);
-	avr_connect_irq(
-			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 6),
-			hd44780.irq + IRQ_HD44780_RW);
 
+	// even if not setup at startup, activate gdb if crashing
+	avr->gdb_port = 1234;
+	if (0) {
+		//avr->state = cpu_Stopped;
+		avr_gdb_init(avr);
+	}
 
-	avr_vcd_init(avr, "gtkwave_output.vcd", &vcd_file, 10 /* usec */);
-	avr_vcd_add_signal(&vcd_file,
-			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), IOPORT_IRQ_PIN_ALL),
-			4 /* bits */, "D4-D7");
-	avr_vcd_add_signal(&vcd_file,
-			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 4),
-			1 /* bits */, "RS");
-	avr_vcd_add_signal(&vcd_file,
-			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 5),
-			1 /* bits */, "E");
-	avr_vcd_add_signal(&vcd_file,
-			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 6),
-			1 /* bits */, "RW");
-	avr_vcd_add_signal(&vcd_file,
-			hd44780.irq + IRQ_HD44780_BUSY,
-			1 /* bits */, "LCD_BUSY");
-	avr_vcd_add_signal(&vcd_file,
-			hd44780.irq + IRQ_HD44780_ADDR,
-			7 /* bits */, "LCD_ADDR");
-	avr_vcd_add_signal(&vcd_file,
-			hd44780.irq + IRQ_HD44780_DATA_IN,
-			8 /* bits */, "LCD_DATA_IN");
-	avr_vcd_add_signal(&vcd_file,
-			hd44780.irq + IRQ_HD44780_DATA_OUT,
-			8 /* bits */, "LCD_DATA_OUT");
+	/*
+	 *	VCD file initialization
+	 *	
+	 *	This will allow you to create a "wave" file and display it in gtkwave
+	 *	Pressing "r" and "s" during the demo will start and stop recording
+	 *	the pin changes
+	 */
+	avr_vcd_init(avr, "gtkwave_output.vcd", &vcd_file, 100000 /* usec */);
+	avr_vcd_add_signal(&vcd_file, 
+		avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), IOPORT_IRQ_PIN_ALL), 8 /* bits */ ,
+		"portb" );
+	//avr_vcd_add_signal(&vcd_file, 
+	//	button.irq + IRQ_BUTTON_OUT, 1 /* bits */ ,
+	//	"button" );
 
-	avr_vcd_add_signal(&vcd_file, ac_input.irq + IRQ_AC_OUT, 1, "ac_input");
+	// 'raise' it, it's a "pullup"
+	//avr_raise_irq(button.irq + IRQ_BUTTON_OUT, 1);
 
-	avr_vcd_start(&vcd_file);
-
-	printf( "Demo : This is HD44780 LCD demo\n"
-			"   You can configure the width&height of the LCD in the code\n"
-			"   Press 'r' to start recording a 'wave' file - with a LOT of data\n"
+	printf( "Demo launching: 'LED' bar is PORTB, updated every 1/64s by the AVR\n"
+			"   firmware using a timer. If you press 'space' this presses a virtual\n"
+			"   'button' that is hooked to the virtual PORTC pin 0 and will\n"
+			"   trigger a 'pin change interrupt' in the AVR core, and will 'invert'\n"
+			"   the display.\n"
+			"   Press 'q' to quit\n\n"
+			"   Press 'r' to start recording a 'wave' file\n"
 			"   Press 's' to stop recording\n"
 			);
 
@@ -230,16 +259,22 @@ main(
 	 */
 	glutInit(&argc, argv);		/* initialize GLUT system */
 
-	int w = 5 + hd44780.w * 6;
-	int h = 5 + hd44780.h * 8;
-	int pixsize = 3;
-
 	glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
-	glutInitWindowSize(w * pixsize, h * pixsize);		/* width=400pixels height=500pixels */
-	window = glutCreateWindow("Press 'q' to quit");	/* create window */
+	glutInitWindowSize(5 * SZ_PIXSIZE, 7 * SZ_PIXSIZE);
+	window = glutCreateWindow("Glut");	/* create window */
 
-	initGL(w * pixsize, h * pixsize);
+	// Set up projection matrix
+	glMatrixMode(GL_PROJECTION); // Select projection matrix
+	glLoadIdentity(); // Start with an identity matrix
+	glOrtho(0, 5 * SZ_PIXSIZE, 0, 7 * SZ_PIXSIZE, 0, 10);
+	//glScalef(1, -1, 1);
+	//glTranslatef(0, -7 * SZ_PIXSIZE, 0);
 
+	glutDisplayFunc(displayCB);		/* set window's display callback */
+	glutKeyboardFunc(keyCB);		/* set window's key callback */
+	glutTimerFunc(1000 / 24, timerCB, 0);
+
+	// the AVR run on it's own thread. it even allows for debugging!
 	pthread_t run;
 	pthread_create(&run, NULL, avr_run_thread, NULL);
 
