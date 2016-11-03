@@ -28,8 +28,11 @@ button_t	button;
 int			do_button_press = 0;
 avr_t		*avr = NULL;
 avr_vcd_t	vcd_file;
+int			display_flag = 0;
 uint8_t		pin_state = 0;		// current port B
 uint8_t		ddr_state = 0;		// ddr port B
+
+static uint8_t		last_cp_state = 0;		// last charlieplexing state
 
 #define		SZ_PIXSIZE		32.0
 
@@ -50,6 +53,7 @@ int			window;
  *
  *      H H : M M
  */
+
 #define		VX1(x)		((x * SZ_GRID) + SZ_LED)
 #define		VY1(y)		((y * SZ_GRID) + SZ_LED)
 #define		VX2(x)		(x * SZ_GRID)
@@ -59,46 +63,93 @@ int			window;
 #define		VX4(x)		((x * SZ_GRID) + SZ_LED)
 #define		VY4(y)		(y * SZ_GRID)
 
+#define		VERTEX(x, y) VX1(x), VY1(y), VX2(x), VY2(y), VX3(x), VY3(y), VX4(x), VY4(y)
+
 float		leds[14][8] = {
-	{VX1(0), VY1(0), VX2(0), VY2(0), VX3(0), VY3(0), VX4(0), VY4(0)},
-	{VX1(1), VY1(0), VX2(1), VY2(0), VX3(1), VY3(0), VX4(1), VY4(0)},
-	{VX1(1), VY1(1), VX2(1), VY2(1), VX3(1), VY3(1), VX4(1), VY4(1)},
-	{VX1(1), VY1(2), VX2(1), VY2(2), VX3(1), VY3(2), VX4(1), VY4(2)},
-	{VX1(1), VY1(3), VX2(1), VY2(3), VX3(1), VY3(3), VX4(1), VY4(3)},
-	{VX1(3), VY1(0), VX2(3), VY2(0), VX3(3), VY3(0), VX4(3), VY4(0)},
-	{VX1(3), VY1(1), VX2(3), VY2(1), VX3(3), VY3(1), VX4(3), VY4(1)},
-	{VX1(3), VY1(2), VX2(3), VY2(2), VX3(3), VY3(2), VX4(3), VY4(2)},
-	{VX1(4), VY1(0), VX2(4), VY2(0), VX3(4), VY3(0), VX4(4), VY4(0)},
-	{VX1(4), VY1(1), VX2(4), VY2(1), VX3(4), VY3(1), VX4(4), VY4(1)},
-	{VX1(4), VY1(2), VX2(4), VY2(2), VX3(4), VY3(2), VX4(4), VY4(2)},
-	{VX1(4), VY1(3), VX2(4), VY2(3), VX3(4), VY3(3), VX4(4), VY4(3)},
-	{VX1(0), VY1(5), VX2(0), VY2(5), VX3(0), VY3(5), VX4(0), VY4(5)},
-	{VX1(0), VY1(6), VX2(0), VY2(6), VX3(0), VY3(6), VX4(0), VY4(6)}
+	{VERTEX(0, 0)},
+	{VERTEX(1, 0)},
+	{VERTEX(1, 1)},
+	{VERTEX(1, 2)},
+	{VERTEX(1, 3)},
+	{VERTEX(3, 0)},
+	{VERTEX(3, 1)},
+	{VERTEX(3, 2)},
+	{VERTEX(4, 0)},
+	{VERTEX(4, 1)},
+	{VERTEX(4, 2)},
+	{VERTEX(4, 3)},
+	{VERTEX(0, 5)},
+	{VERTEX(0, 6)}
 };
 
 // charlieplexing map
 // xxxxyyyy where x == 1 output, x == 0 input, y == 1 on, y == 0 off
 unsigned char cp[] = {0x00, 0x31, 0x51, 0x91, 0xA2, 0x62, 0x32, 0x64, 0xC4, 0x54, 0xA8, 0xC8, 0x98};
+// delays to keep the leds on for a while, to simulate persistence of vision
+#define		POV		1
+int delays[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
+static void set_pov(int cp_state)
+{
+	for (int di = 1; di <= 12; di++) {
+		if (cp[di] == cp_state) {
+			delays[di] = POV;
+		}
+	}
+}
 /**
  * called when the AVR change any of the pins on port B
  * so lets update our buffer
  */
 void pin_changed_hook(struct avr_irq_t *irq, uint32_t value, void *param)
 {
-	pin_state = (pin_state & ~(1 << irq->irq)) | (value << irq->irq);
-	printf("Changed pin\n");
+	uint8_t	cp_state;
+
+	//printf("irq: %d - value: 0x%.2X - irq->value: 0x%.2X - param: %s - ddr_state: %.2X\n", irq->irq, value, irq->value, (char *)param, ddr_state);
+	//pin_state = (pin_state & ~(1 << irq->irq)) | (value << irq->irq);
+	// note: filter only pins configured as input by and'íng ddr_state
+	pin_state = (uint8_t)value;
+
+	cp_state = ((pin_state & ddr_state) & 0x0F) | ((ddr_state << 4) & 0xF0);
+	//pin_state = (value << irq->irq);
+	//pin_state = (uint8_t)(value & 0xFF);
+	//printf("Changed pin 0x%.2X\n", pin_state);
+	//	glutPostRedisplay();
+	if (last_cp_state != cp_state) {
+		// printf("1>cp_state 0x%.2X\n", cp_state);
+		last_cp_state = cp_state;
+		set_pov(cp_state);
+		display_flag++;
+	}
 }
 
 void ddr_hook(struct avr_irq_t *irq, uint32_t value, void *param)
 {
+	uint8_t	cp_state;
+//	ddr_state = (ddr_state & ~(1 << irq->irq)) | (value << irq->irq);
+
 	ddr_state = (uint8_t)value;
-	printf("Changed ddr %2.x\n", ddr_state);
+	cp_state = ((pin_state & ddr_state) & 0x0F) | ((ddr_state << 4) & 0xF0);
+	//printf("Changed ddr 0x%.2X - 0x%.2X & 0x0F - %s - irq: %d - flags: %d - value: %d -- value: %d\n", ddr_state, ddr_state & 0x0F, irq->name, irq->irq, irq->flags, irq->value, value);
+	//	glutPostRedisplay();
+	//display_flag++;
+	if (last_cp_state != cp_state) {
+		// printf("2>cp_state 0x%.2X\n", cp_state);
+		last_cp_state = cp_state;
+		set_pov(cp_state);
+		display_flag++;
+	}
 }
 
 void displayCB(void)		/* function called whenever redisplay needed */
 {
-	unsigned char curstate = (pin_state & 0x0F) | (ddr_state & 0xF0);
+	float			*ledv;
+	static unsigned char laststate = 0xFF;
+	//unsigned char	curstate = (pin_state & 0x0F) | ((ddr_state << 4) & 0xF0);
+	//	printf("curstate 0x%.2X\n", curstate);
+	//if (curstate == laststate) {
+	//	return;
+	//}
 	// OpenGL rendering goes here...
 	glClear(GL_COLOR_BUFFER_BIT);
 
@@ -106,18 +157,21 @@ void displayCB(void)		/* function called whenever redisplay needed */
 	glMatrixMode(GL_MODELVIEW); // Select modelview matrix
 	glLoadIdentity(); // Start with an identity matrix
 
-	// float grid = SZ_PIXSIZE;
-	// float size = grid * 0.8;
     glBegin(GL_QUADS);
 	glColor3f(1, 0, 0);
 
-	for (int di = 1; di < 13; di++) {
-		if (cp[di] == curstate) {
-			float	*ledv = leds[di - 1];
+	//if (curstate != laststate) {
+	//	laststate = curstate;
+	//	printf("**curstate 0x%.2X\n", curstate);
+	//}
+	for (int di = 1; di <= 12; di++) {
+		if (delays[di] > 0) {
+			ledv = leds[di - 1];
 			glVertex2f(ledv[0], ledv[1]);
 			glVertex2f(ledv[2], ledv[3]);
 			glVertex2f(ledv[4], ledv[5]);
 			glVertex2f(ledv[6], ledv[7]);
+			delays[di]--;
 		}
 	}
 
@@ -140,26 +194,25 @@ void keyCB(unsigned char key, int x, int y)	/* called on key press */
 		case ' ':
 			do_button_press++; // pass the message to the AVR thread
 			break;
-		case 'r':
-			printf("Starting VCD trace\n");
-			avr_vcd_start(&vcd_file);
-			break;
-		case 's':
-			printf("Stopping VCD trace\n");
-			avr_vcd_stop(&vcd_file);
-			break;
+		// case 'r':
+		// 	printf("Starting VCD trace\n");
+		// 	avr_vcd_start(&vcd_file);
+		// 	break;
+		// case 's':
+		// 	printf("Stopping VCD trace\n");
+		// 	avr_vcd_stop(&vcd_file);
+		// 	break;
 	}
 }
 
 // gl timer. if the pin have changed states, refresh display
 void timerCB(int i)
 {
-	static uint8_t oldstate = 0xff;
+	static int old_display_flag = 0;
 	// restart timer
 	glutTimerFunc(1000 / 64, timerCB, 0);
 
-	if (oldstate != pin_state) {
-		oldstate = pin_state;
+	if (old_display_flag != display_flag) {
 		glutPostRedisplay();
 	}
 }
@@ -188,7 +241,7 @@ int main(int argc, char *argv[])
 	elf_read_firmware(fname, &f);
 
 	snprintf(f.mmcu, sizeof(f.mmcu) - 1, "%s", mmcu);
-	f.frequency = 8000000;
+	f.frequency = 4800000;
 	printf("firmware %s f=%d mmcu=%s\n", fname, (int)f.frequency, f.mmcu);
 
 	avr = avr_make_mcu_by_name(f.mmcu);
@@ -200,11 +253,11 @@ int main(int argc, char *argv[])
 	avr_load_firmware(avr, &f);
 
 	// initialize our 'peripheral'
-	//button_init(avr, &button, "button");
+	button_init(avr, &button, "button");
 	// "connect" the output irw of the button to the port pin of the AVR
-	//avr_connect_irq(
-	//	button.irq + IRQ_BUTTON_OUT,
-	//	avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('C'), 0));
+	avr_connect_irq(
+		button.irq + IRQ_BUTTON_OUT,
+		avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), IOPORT_IRQ_PIN4));
 
 	avr_irq_register_notify(
 		avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), IOPORT_IRQ_DIRECTION_ALL),
@@ -212,12 +265,12 @@ int main(int argc, char *argv[])
 		NULL);
 
 	// connect the 4 charlieplexed pins (0 to 3) on port B to our callback
-	for (int i = 0; i < 4; i++) {
+	//for (int i = 0; i < 4; i++) {
 		avr_irq_register_notify(
-			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), i),
+			avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), IOPORT_IRQ_PIN_ALL),
 			pin_changed_hook, 
-			NULL);
-	}
+			"portb");
+	//}
 
 	// even if not setup at startup, activate gdb if crashing
 	avr->gdb_port = 1234;
@@ -233,16 +286,16 @@ int main(int argc, char *argv[])
 	 *	Pressing "r" and "s" during the demo will start and stop recording
 	 *	the pin changes
 	 */
-	avr_vcd_init(avr, "gtkwave_output.vcd", &vcd_file, 100000 /* usec */);
-	avr_vcd_add_signal(&vcd_file, 
-		avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), IOPORT_IRQ_PIN_ALL), 8 /* bits */ ,
-		"portb" );
-	//avr_vcd_add_signal(&vcd_file, 
-	//	button.irq + IRQ_BUTTON_OUT, 1 /* bits */ ,
-	//	"button" );
+	// avr_vcd_init(avr, "gtkwave_output.vcd", &vcd_file, 100000 /* usec */);
+	// avr_vcd_add_signal(&vcd_file, 
+	// 	avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), IOPORT_IRQ_PIN_ALL), 8 /* bits */ ,
+	// 	"portb" );
+	// avr_vcd_add_signal(&vcd_file, 
+	// 	button.irq + IRQ_BUTTON_OUT, 1 /* bits */ ,
+	// 	"button" );
 
 	// 'raise' it, it's a "pullup"
-	//avr_raise_irq(button.irq + IRQ_BUTTON_OUT, 1);
+	avr_raise_irq(button.irq + IRQ_BUTTON_OUT, 0);
 
 	printf( "Demo launching: 'LED' bar is PORTB, updated every 1/64s by the AVR\n"
 			"   firmware using a timer. If you press 'space' this presses a virtual\n"

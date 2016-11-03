@@ -6,6 +6,8 @@ MMCU=attiny13
 # Name of the source and output, no extension (only works for one source)
 FILENAME=binw2
 
+rm $FILENAME.elf
+
 # Build HEX
 avr-gcc -mmcu=$MMCU -Wall -gdwarf-2 -Os -std=gnu99 -funsigned-char -funsigned-bitfields -fpack-struct -fshort-enums -MD -MP -MT $FILENAME.o -MF $FILENAME.o.d -x assembler-with-cpp -Wa,-gdwarf2 -c $FILENAME.S
 avr-gcc -mmcu=$MMCU -Wl,-Map=$FILENAME.map $FILENAME.o -o $FILENAME.elf
@@ -17,5 +19,4 @@ avr-size -C --mcu=$MMCU $FILENAME.elf
 rm *.o
 rm *.o.d
 rm $FILENAME.eep
-rm $FILENAME.elf
 rm $FILENAME.map
