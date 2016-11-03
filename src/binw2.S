@@ -11,9 +11,10 @@
 ;* Target MCU    : attiny13
 ;********************************************************************
 
-; Total of leds required: 13
+; Total of leds required: 14
 ;
-; x <- AM/PM
+; x <- AM
+; x <- PM
 ;
 ;   x     x
 ;   x   x x
@@ -84,41 +85,76 @@
 
 ; MACROS
 
-.macro bitled bit led
-	ldi r16, 0
-	sbrc r27, \bit
-	ldi r16, \led
-	rcall turnled
+.macro turnled reg bit lowddrb lowportb offlabel onlabel
+	; turn all leds off to avoid ghost leds
+	andi r26, 0xF0
+	out _SFR_IO_ADDR(PORTB), r26
+	andi r27, 0xF0
+	out _SFR_IO_ADDR(DDRB), r27
+	; check bit corresponding to this led
+	sbrs \reg, \bit
+	rjmp \offlabel
+	; turn on led
+	; in/out
+	andi r27, 0xF0
+	ori r27, \lowddrb
+	out _SFR_IO_ADDR(DDRB), r27
+	; on/off
+	ori r26, \lowportb
+	out _SFR_IO_ADDR(PORTB), r26
+	rjmp \onlabel
+.endm
+
+.macro ledoffdelay
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
 .endm
 
 TIM0_COMPA_vect:
 	in r1, SREG
 	inc r25
-	cpi r25, 75
+	cpi r25, 75		; 75 interruptions = 1 second
 	brne exittimer
-	ldi r25, 0
+	ldi r25, 0		; reset interruption counter
 	inc r19			; increment seconds
-	cpi r19, 60
+	cpi r19, 60		; reached 60 seconds?
 	brne exittimer
-	ldi r19, 0
+	ldi r19, 0		; reset seconds
 	inc r18			; increment minutes
-	cpi r18, 60
+	mov r20, r18	; load minutes to aux
+	andi r20, 0x0F	; low nibble only (second minute digit)
+	cpi r20, 10		; check if reached 10 on the second digit
 	brne exittimer
-	ldi r18, 0
+	andi r18, 0xF0	; clear low nibble
+	ldi r20, 0x10
+	add r18, r20	; increment high nibble
+	cpi r18, 0x60	; reached 60 minutes?
+	brne exittimer
+	ldi r18, 0		; reset minutes
 	inc r17			; increment hour
-	cpi r17, 24
+	mov r20, r17	; load hour to aux
+	andi r20, 0x1F	; discard AM/PM flag
+	cpi r20, 10		; check if reached 10
+	brne checkampm
+	andi r17, 0xF0	; clear low nibble
+	ldi r20, 0x10
+	add r17, r20	; increment high nibble
+checkampm:
+	mov r20, r17	; load new hour to aux
+	andi r20, 0x1F	; discard AM/PM flag
+	cpi r20, 0x13	; flip AM/PM?
 	brne exittimer
-	ldi r17, 0
+	ldi r20, 0x80
+	eor	r17, r20	; toggle AM/PM flag
+	ori r17, 0x01	; reset hour to 1
 exittimer:
 	out SREG, r1
 	reti
-
-cpbits:
-	; Tells which of the 4 charlie-plexed pins should be configured as input / output and
-	; in case of output which ones should be on / off, for each led:
-	; xxxxyyyy where x == 1 output, x == 0 input, y == 1 on, y == 0 off
-	.byte 0x00, 0x31, 0x51, 0x91, 0xA2, 0x62, 0x32, 0x64, 0xC4, 0x54, 0xA8, 0xC8, 0x98
-	.align 2
 
 main:
 	; Initialize stack
@@ -136,21 +172,33 @@ main:
 
 	; Initialize registers
 	ldi r16, 0x00		; aux
-	ldi r17, 7; 0x08		; hour (0 to 23)
-	ldi r18, 37;0x12		; minute (0 to 59)
+						;
+						; AM H HHHH
+						; PM 1 2222
+						; |  | ||||
+	ldi r17, 0x00		; 0000 0000 hour and AM/PM flag
+	;ldi r17, 0x9F		; 0000 0000 hour and AM/PM flag
+						;
+						;  MMM MMMM
+						;  111 2222
+						;  ||| ||||
+	ldi r18, 0x00		; 0000 0000 minute
+	;ldi r18, 0x7F		; 0000 0000 minute
+						;
 	ldi r19, 0x00		; second (0 to 59)
-	ldi r20, 0xFF		; loop counter
+	ldi r20, 0x00		; aux used during interruption
 	ldi r21, 0x00		; display active counter
 	ldi r22, 0x00		; display am/pm
 	ldi r23, 0x00		; loop counter 2
 	ldi r24, 0x00		; zero
-	ldi r25, 0x00		; aux
+	ldi r25, 0x00		; interruption counter
 	ldi r26, 0x00		; store DDRB and PORTB during turnled
 	ldi r27, 0x00		; store result from dec2bcd
+	ldi r28, 0x00		; dec2bcd counter
+	ldi r29, 0x00		; dec2bcd counter
 
 	mov r0, r24			; used by lpm instruction
 	mov r1, r24			; to save SREG during interrupt
-
 	;
 	; The device always starts in program mode, so the user can set the current time
 	;
@@ -158,13 +206,15 @@ programmode:
 	; Read the input, we have two buttons attached with different resistance values
 	; so, we make an ADC conversion to figure out which button is pressed
 	cbi _SFR_IO_ADDR(DDRB), INPUT	; make input
+
 	; Start ADC conversion
-	sbi _SFR_IO_ADDR(ACSR), ACD
+;	sbi _SFR_IO_ADDR(ACSR), ACD
 	; Wait until ADC conversion finishes
-adcconv:
-	sbic _SFR_IO_ADDR(ADCSRA), ADSC
-	rjmp adcconv
+;adcconv:
+;	sbic _SFR_IO_ADDR(ADCSRA), ADSC
+;	rjmp adcconv
 	; Conversion done, read result
+
 
   ;  ADCSRA |= (1 << ADSC); // start conversion
   ;  while( ADCSRA & ( 1<< ADSC ) ); // wait under conversion done
@@ -209,6 +259,7 @@ adcconv:
 	; Enable counter interrupt
 	in r16, _SFR_IO_ADDR(TIMSK0)
 	ori r16, _BV(OCIE0A)
+;XXX: test
 	out _SFR_IO_ADDR(TIMSK0), r16
 
 	; Enable global interrupts
@@ -242,101 +293,89 @@ chkinput:
 	nop
 	ret
 
-turnled:
-	; r16 must contain the number of led to turn on, or 0 to turn all off
-	ldi ZL, lo8(cpbits)
-	ldi ZH, hi8(cpbits)
-	add ZL, r16
-	adc ZH, r24
-	lpm				; lpm = 3 cycles
-	; in/out
-	in r26, _SFR_IO_ADDR(DDRB)
-	andi r26, 0xF0
-	mov r16, r0
-	swap r16
-	andi r16, 0x0F
-	or r26, r16
-	out _SFR_IO_ADDR(DDRB), r26
-	; on/off
-	in r26, _SFR_IO_ADDR(PORTB)
-	andi r26, 0xF0
-	mov r16, r0
-	andi r16, 0x0F
-	or r26, r16
-	out _SFR_IO_ADDR(PORTB), r26
-	ret
-
-dec2bcd:
-	; convert decimal number (from 0 to 59) to BCD format
-	; r16 must contain the number to convert
-	; return result in r27
-	ldi r27, 0
-	ldi r28, 50
-	ldi r29, 0x50
-convloop:
-	cp r16, r28
-	brlo islower
-	or r27, r29
-	sub r16, r28
-islower:
-	subi r28, 10
-	subi r29, 0x10
-	brne convloop
-	or r27, r16
-	ret
-
 begindisplay:
 	cbi _SFR_IO_ADDR(PORTB), PIN_AMPM	; clear am/pm pin
 	sbi _SFR_IO_ADDR(DDRB), PIN_AMPM	; output
 displaytime:
 	; display time, this is a loop that keeps turning the leds on and off in sequence during
 	; DISPLAY_DLY seconds
+	; v2.0 - no BCD conversion needed, no lpm
 	dec r21
 	cpi r21, 0
-	breq displayoff
+	breq jmpdisplayoff
 	ldi r23, 0xFF
+	rjmp disptime
+jmpdisplayoff:
+	ldi ZL, lo8(displayoff)
+	ldi ZH, hi8(displayoff)
+	ijmp
 disptime:
-	; first digit hour
-	mov r16, r17
-	cpi r16, 13
-	brlo ampmoff
-	subi r16, 12
-	; turn am/pm led on
-	sbi _SFR_IO_ADDR(PORTB), PIN_AMPM
-	rjmp disphour
-ampmoff:
-	; turn am/pm led off
-	cbi _SFR_IO_ADDR(PORTB), PIN_AMPM
-disphour:
-	rcall dec2bcd
-	mov r16, r27
-	swap r16
-	andi r16, 0x01
-	rcall turnled
-	; second digit hour
-	bitled 0 2
-	bitled 1 3
-	bitled 2 4
-	bitled 3 5
-	; first digit minutes
-	mov r16, r19
-	rcall dec2bcd
-	bitled 4 6
-	bitled 5 7
-	bitled 6 8
-	; second digit minutes
-	bitled 0 9
-	bitled 1 10
-	bitled 2 11
-	bitled 3 12
+	in r26, _SFR_IO_ADDR(PORTB)
+	in r27, _SFR_IO_ADDR(DDRB)
+	; turnled <reg> <bit> <lowddrb> <lowportb> <offlabel> <onlabel>
+led1:
+	turnled r17 4 0x03 0x01 led2delay led2
+led2delay:
+	ledoffdelay
+led2:
+	turnled r17 0 0x05 0x01 led3delay led3
+led3delay:
+	ledoffdelay
+led3:
+	turnled r17 1 0x09 0x01 led4delay led4
+led4delay:
+	ledoffdelay
+led4:
+	turnled r17 2 0x0A 0x02 led5delay led5
+led5delay:
+	ledoffdelay
+led5:
+	turnled r17 3 0x06 0x02 led6delay led6
+led6delay:
+	ledoffdelay
+led6:
+	turnled r18 4 0x03 0x02 led7delay led7
+led7delay:
+	ledoffdelay
+led7:
+	turnled r18 5 0x06 0x04 led8delay led8
+led8delay:
+	ledoffdelay
+led8:
+	turnled r18 6 0x0C 0x04 led9delay led9
+led9delay:
+	ledoffdelay
+led9:
+	turnled r18 0 0x05 0x04 led10delay led10
+led10delay:
+	ledoffdelay
+led10:
+	turnled r18 1 0x0A 0x08 led11delay led11
+led11delay:
+	ledoffdelay
+led11:
+	turnled r18 2 0x0C 0x08 led12delay led12
+led12delay:
+	ledoffdelay
+led12:
+	turnled r18 3 0x09 0x08 allsetdelay allset
+allsetdelay:
+	ledoffdelay
+allset:
 	; check input again
 	rcall chkinput
 	; decrement second loop counter
 	dec r23
-	brne disptime
+	brne jmpdisptime
 	rjmp displaytime
+jmpdisptime:
+	ldi ZL, lo8(disptime)
+	ldi ZH, hi8(disptime)
+	ijmp
 
 displayoff:
+; XXX: test
+;rjmp loop
 	; turn off display
 	in r16, _SFR_IO_ADDR(DDRB)
 ;	andi r16, 0xF0				; make the 4 charlie-plexing pins input (clear the bits)
