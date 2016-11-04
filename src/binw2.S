@@ -151,6 +151,7 @@ checkampm:
 	brne exittimer
 	ldi r20, 0x80
 	eor	r17, r20	; toggle AM/PM flag
+	andi r17, 0x80	; keep AM/PM flag only
 	ori r17, 0x01	; reset hour to 1
 exittimer:
 	out SREG, r1
@@ -176,7 +177,7 @@ main:
 						; AM H HHHH
 						; PM 1 2222
 						; |  | ||||
-	ldi r17, 0x00		; 0000 0000 hour and AM/PM flag
+	ldi r17, 0x12		; 0000 0000 hour and AM/PM flag
 	;ldi r17, 0x9F		; 0000 0000 hour and AM/PM flag
 						;
 						;  MMM MMMM
@@ -299,7 +300,6 @@ begindisplay:
 displaytime:
 	; display time, this is a loop that keeps turning the leds on and off in sequence during
 	; DISPLAY_DLY seconds
-	; v2.0 - no BCD conversion needed, no lpm
 	dec r21
 	cpi r21, 0
 	breq jmpdisplayoff
@@ -310,6 +310,14 @@ jmpdisplayoff:
 	ldi ZH, hi8(displayoff)
 	ijmp
 disptime:
+	in r26, _SFR_IO_ADDR(PORTB)
+	in r27, _SFR_IO_ADDR(DDRB)
+	; check if AM/PM flag is set
+	sbrs r17, 7
+	rjmp led1
+	andi r26, 0xF0
+	ori r26, 0x20		; PIN_AMPM (1 << PIN_AMPM) = 0x20
+	out _SFR_IO_ADDR(PORTB), r26
 	in r26, _SFR_IO_ADDR(PORTB)
 	in r27, _SFR_IO_ADDR(DDRB)
 	; turnled <reg> <bit> <lowddrb> <lowportb> <offlabel> <onlabel>
