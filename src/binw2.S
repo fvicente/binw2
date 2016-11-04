@@ -85,7 +85,7 @@
 
 ; MACROS
 
-.macro turnled reg bit lowddrb lowportb offlabel onlabel
+.macro turnled reg bit ddrb portb offlabel onlabel
 	; turn all leds off to avoid ghost leds
 	andi r26, 0xF0
 	out _SFR_IO_ADDR(PORTB), r26
@@ -97,15 +97,13 @@
 	; turn on led
 	; in/out
 	andi r27, 0xF0
-	ori r27, \lowddrb
+	ori r27, \ddrb
 	out _SFR_IO_ADDR(DDRB), r27
 	; on/off
-	ori r26, \lowportb
+	ori r26, \portb
 	out _SFR_IO_ADDR(PORTB), r26
 	rjmp \onlabel
-.endm
-
-.macro ledoffdelay
+\offlabel:
 	nop
 	nop
 	nop
@@ -113,6 +111,7 @@
 	nop
 	nop
 	nop
+\onlabel:
 .endm
 
 TIM0_COMPA_vect:
@@ -170,6 +169,7 @@ main:
 	sbi _SFR_IO_ADDR(DDRB), 0x00	; output
 	sbi _SFR_IO_ADDR(DDRB), 0x01	; output
 	sbi _SFR_IO_ADDR(DDRB), 0x02	; output
+	sbi _SFR_IO_ADDR(DDRB), 0x03	; output
 
 	; Initialize registers
 	ldi r16, 0x00		; aux
@@ -189,23 +189,20 @@ main:
 	ldi r19, 0x00		; second (0 to 59)
 	ldi r20, 0x00		; aux used during interruption
 	ldi r21, 0x00		; display active counter
-	ldi r22, 0x00		; display am/pm
+	ldi r22, 0x00		; - unused
 	ldi r23, 0x00		; loop counter 2
-	ldi r24, 0x00		; zero
+	ldi r24, 0x00		; - unused
 	ldi r25, 0x00		; interruption counter
 	ldi r26, 0x00		; store DDRB and PORTB during turnled
 	ldi r27, 0x00		; store result from dec2bcd
-	ldi r28, 0x00		; dec2bcd counter
-	ldi r29, 0x00		; dec2bcd counter
 
-	mov r0, r24			; used by lpm instruction
-	mov r1, r24			; to save SREG during interrupt
+	mov r1, r16			; to save SREG during interrupt
 	;
-	; The device always starts in program mode, so the user can set the current time
+	; The device always starts in program mode, so the user can set current time
 	;
 programmode:
-	; Read the input, we have two buttons attached with different resistance values
-	; so, we make an ADC conversion to figure out which button is pressed
+	; Read the input, we have two buttons attached with different resistance
+	; values so, we make an ADC conversion to figure out which button is pressed
 	cbi _SFR_IO_ADDR(DDRB), INPUT	; make input
 
 	; Start ADC conversion
@@ -260,7 +257,6 @@ programmode:
 	; Enable counter interrupt
 	in r16, _SFR_IO_ADDR(TIMSK0)
 	ori r16, _BV(OCIE0A)
-;XXX: test
 	out _SFR_IO_ADDR(TIMSK0), r16
 
 	; Enable global interrupts
@@ -298,78 +294,37 @@ begindisplay:
 	cbi _SFR_IO_ADDR(PORTB), PIN_AMPM	; clear am/pm pin
 	sbi _SFR_IO_ADDR(DDRB), PIN_AMPM	; output
 displaytime:
-	; display time, this is a loop that keeps turning the leds on and off in sequence during
-	; DISPLAY_DLY seconds
+	; display time, this is a loop that keeps turning the leds on and off in
+	; sequence during DISPLAY_DLY seconds
 	dec r21
 	cpi r21, 0
 	breq jmpdisplayoff
 	ldi r23, 0xFF
 	rjmp disptime
 jmpdisplayoff:
+	; note: relative jump (rjmp) wont work, because the label is too far
 	ldi ZL, lo8(displayoff)
 	ldi ZH, hi8(displayoff)
 	ijmp
 disptime:
 	in r26, _SFR_IO_ADDR(PORTB)
 	in r27, _SFR_IO_ADDR(DDRB)
-	; check if AM/PM flag is set
-	sbrs r17, 7
-	rjmp led1
-	andi r26, 0xF0
-	ori r26, 0x20		; PIN_AMPM (1 << PIN_AMPM) = 0x20
-	out _SFR_IO_ADDR(PORTB), r26
-	in r26, _SFR_IO_ADDR(PORTB)
-	in r27, _SFR_IO_ADDR(DDRB)
-	; turnled <reg> <bit> <lowddrb> <lowportb> <offlabel> <onlabel>
-led1:
+	; turnled <reg> <bit> <ddrb> <portb> <offlabel> <onlabel>
+leds:
+	; first is the AM/PM led
+	turnled r17 7 0x20 0x20 led1delay led1
 	turnled r17 4 0x03 0x01 led2delay led2
-led2delay:
-	ledoffdelay
-led2:
 	turnled r17 0 0x05 0x01 led3delay led3
-led3delay:
-	ledoffdelay
-led3:
 	turnled r17 1 0x09 0x01 led4delay led4
-led4delay:
-	ledoffdelay
-led4:
 	turnled r17 2 0x0A 0x02 led5delay led5
-led5delay:
-	ledoffdelay
-led5:
 	turnled r17 3 0x06 0x02 led6delay led6
-led6delay:
-	ledoffdelay
-led6:
 	turnled r18 4 0x03 0x02 led7delay led7
-led7delay:
-	ledoffdelay
-led7:
 	turnled r18 5 0x06 0x04 led8delay led8
-led8delay:
-	ledoffdelay
-led8:
 	turnled r18 6 0x0C 0x04 led9delay led9
-led9delay:
-	ledoffdelay
-led9:
 	turnled r18 0 0x05 0x04 led10delay led10
-led10delay:
-	ledoffdelay
-led10:
 	turnled r18 1 0x0A 0x08 led11delay led11
-led11delay:
-	ledoffdelay
-led11:
 	turnled r18 2 0x0C 0x08 led12delay led12
-led12delay:
-	ledoffdelay
-led12:
 	turnled r18 3 0x09 0x08 allsetdelay allset
-allsetdelay:
-	ledoffdelay
-allset:
 	; check input again
 	rcall chkinput
 	; decrement second loop counter
@@ -377,24 +332,19 @@ allset:
 	brne jmpdisptime
 	rjmp displaytime
 jmpdisptime:
+	; note: relative jump (rjmp) wont work, because the label is too far
 	ldi ZL, lo8(disptime)
 	ldi ZH, hi8(disptime)
 	ijmp
 
 displayoff:
-; XXX: test
-;rjmp loop
 	; turn off display
 	in r16, _SFR_IO_ADDR(DDRB)
-;	andi r16, 0xF0				; make the 4 charlie-plexing pins input (clear the bits)
-;	andi r16, ~(_BV(PIN_AMPM))	; make am/pm pin input
-
-	; test all output
-	ori r16, 0x0F				; make the 4 charlie-plexing pins input (clear the bits)
-
+	andi r16, 0xF0				; make the 4 charlie-plexing pins input (clear)
+	andi r16, ~(_BV(PIN_AMPM))	; make am/pm pin input
 	out _SFR_IO_ADDR(DDRB), r16
-	cbi _SFR_IO_ADDR(PORTB), 0
-	cbi _SFR_IO_ADDR(PORTB), 1
-	cbi _SFR_IO_ADDR(PORTB), 2
-	cbi _SFR_IO_ADDR(PORTB), 3
+	in r16, _SFR_IO_ADDR(PORTB)
+	andi r16, 0xF0				; turn the 4 charlie-plexing pins off
+	andi r16, ~(_BV(PIN_AMPM))	; turn am/pm pin off
+	out _SFR_IO_ADDR(PORTB), r16
 	rjmp loop
