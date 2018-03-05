@@ -86,7 +86,7 @@
 ; MACROS
 
 .macro turnled reg bit ddrb portb offlabel onlabel
-	; turn all leds off to avoid ghost leds
+	; turn all leds off to avoid ghost effect
 	andi r26, 0xF0
 	out _SFR_IO_ADDR(PORTB), r26
 	andi r27, 0xF0
@@ -269,7 +269,8 @@ loop:
 	ori r16, _BV(SE)
 	out _SFR_IO_ADDR(MCUCR), r16
 
-	sleep
+; TODO: timer interruption doesn't work during sleep in simulator
+;	sleep
 
 	; Disable sleep mode bit
 	in r16, _SFR_IO_ADDR(MCUCR)
@@ -298,14 +299,20 @@ displaytime:
 	; sequence during DISPLAY_DLY seconds
 	dec r21
 	cpi r21, 0
-	breq jmpdisplayoff
+	breq displayoff
 	ldi r23, 0xFF
 	rjmp disptime
-jmpdisplayoff:
-	; note: relative jump (rjmp) wont work, because the label is too far
-	ldi ZL, lo8(displayoff)
-	ldi ZH, hi8(displayoff)
-	ijmp
+displayoff:
+	; turn off display
+	in r16, _SFR_IO_ADDR(DDRB)
+	andi r16, 0xF0				; make the 4 charlie-plexing pins input (clear)
+	andi r16, ~(_BV(PIN_AMPM))	; make am/pm pin input
+	out _SFR_IO_ADDR(DDRB), r16
+	in r16, _SFR_IO_ADDR(PORTB)
+	andi r16, 0xF0				; turn the 4 charlie-plexing pins off
+	andi r16, ~(_BV(PIN_AMPM))	; turn am/pm pin off
+	out _SFR_IO_ADDR(PORTB), r16
+	rjmp loop
 disptime:
 	in r26, _SFR_IO_ADDR(PORTB)
 	in r27, _SFR_IO_ADDR(DDRB)
@@ -336,15 +343,3 @@ jmpdisptime:
 	ldi ZL, lo8(disptime)
 	ldi ZH, hi8(disptime)
 	ijmp
-
-displayoff:
-	; turn off display
-	in r16, _SFR_IO_ADDR(DDRB)
-	andi r16, 0xF0				; make the 4 charlie-plexing pins input (clear)
-	andi r16, ~(_BV(PIN_AMPM))	; make am/pm pin input
-	out _SFR_IO_ADDR(DDRB), r16
-	in r16, _SFR_IO_ADDR(PORTB)
-	andi r16, 0xF0				; turn the 4 charlie-plexing pins off
-	andi r16, ~(_BV(PIN_AMPM))	; turn am/pm pin off
-	out _SFR_IO_ADDR(PORTB), r16
-	rjmp loop

@@ -149,9 +149,12 @@ void displayCB(void)		/* function called whenever redisplay needed */
 	glLoadIdentity(); // Start with an identity matrix
 
     glBegin(GL_QUADS);
-	glColor3f(1, 0, 0);
+	glColor3f(100 / 255, 200 / 255, 255 / 255);
 
 	for (int di = 1; di <= 14; di++) {
+		if (di > 12) {
+			glColor3f(255 / 255, 100 / 255, 255 / 255);
+		}
 		if (delays[di] > 0) {
 			ledv = leds[di - 1];
 			glVertex2f(ledv[0], ledv[1]);
@@ -172,7 +175,6 @@ void keyCB(unsigned char key, int x, int y)	/* called on key press */
 	if (key == 'q') {
 		exit(0);
 	}
-	//static uint8_t buf[64];
 	switch (key) {
 		case 'q':
 		case 0x1f: // escape
@@ -240,7 +242,8 @@ int main(int argc, char *argv[])
 
 	// initialize our 'peripheral'
 	button_init(avr, &button, "button");
-	// "connect" the output irw of the button to the port pin of the AVR
+
+	// "connect" the output irq of the button to the port pin of the AVR
 	avr_connect_irq(
 		button.irq + IRQ_BUTTON_OUT,
 		avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), IOPORT_IRQ_PIN4));
@@ -257,10 +260,10 @@ int main(int argc, char *argv[])
 
 	// even if not setup at startup, activate gdb if crashing
 	avr->gdb_port = 1234;
-	if (0) {
-		//avr->state = cpu_Stopped;
-		avr_gdb_init(avr);
-	}
+	//if (0) {
+	//	//avr->state = cpu_Stopped;
+	//	avr_gdb_init(avr);
+	//}
 
 	/*
 	 *	VCD file initialization
@@ -280,15 +283,12 @@ int main(int argc, char *argv[])
 	// 'raise' it, it's a "pullup"
 	avr_raise_irq(button.irq + IRQ_BUTTON_OUT, 0);
 
-	printf( "Demo launching: 'LED' bar is PORTB, updated every 1/64s by the AVR\n"
-			"   firmware using a timer. If you press 'space' this presses a virtual\n"
-			"   'button' that is hooked to the virtual PORTC pin 0 and will\n"
-			"   trigger a 'pin change interrupt' in the AVR core, and will 'invert'\n"
-			"   the display.\n"
-			"   Press 'q' to quit\n\n"
+	printf( "Launching binw2 simulation\n"
+			"   Press 'space' to press virtual button attached to pin %d\n"
+			"   Press 'q' to quit\n"
 			"   Press 'r' to start recording a 'wave' file\n"
-			"   Press 's' to stop recording\n"
-			);
+			"   Press 's' to stop recording\n",
+			IOPORT_IRQ_PIN4);
 
 	/*
 	 * OpenGL init, can be ignored

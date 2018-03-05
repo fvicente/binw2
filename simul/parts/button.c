@@ -37,7 +37,8 @@ button_auto_release(
 		void * param)
 {
 	button_t * b = (button_t *)param;
-	avr_raise_irq(b->irq + IRQ_BUTTON_OUT, 1);
+	// FGV: inverted button state
+	avr_raise_irq(b->irq + IRQ_BUTTON_OUT, 0);
 	printf("button_auto_release\n");
 	return 0;
 }
@@ -52,7 +53,8 @@ button_press(
 		uint32_t duration_usec)
 {
 	avr_cycle_timer_cancel(b->avr, button_auto_release, b);
-	avr_raise_irq(b->irq + IRQ_BUTTON_OUT, 0);// press
+	// FGV: inverted button state
+	avr_raise_irq(b->irq + IRQ_BUTTON_OUT, 1);// press
 	// register the auto-release
 	avr_cycle_timer_register_usec(b->avr, duration_usec, button_auto_release, b);
 }
